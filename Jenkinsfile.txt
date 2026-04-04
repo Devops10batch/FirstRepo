@@ -1,0 +1,73 @@
+pipeline {
+    agent any
+
+    stages {
+        stage ('Checkout SCM'){
+            steps {
+                checkout scmGit(
+                    branches: [[name: '*/main']],
+                    extensions: [cloneOption(shallow: false, depth: 0, noTags: false, honorRefspec: true)],
+                    userRemoteConfigs: [[credentialsId: 'github-creds', url: 'https://github.com/ikscorpio/javawebapp.git']]
+                )
+            }
+        }
+        stage ('Build and Test'){
+            steps {
+                sh 'mvn clean verify'
+            }
+        }
+        stage ('SonarQube Analysis') {
+            steps {
+                script {
+                    def scannerHome = tool 'sonarscanner'
+                    withSonarQubeEnv('SonarQube') {
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner \
+                              -Dsonar.projectKey=javawebapp \
+                              -Dsonar.projectName=javawebapp \
+                              -Dsonar.projectVersion=${BUILD_NUMBER} \
+                                                            -Dsonar.scm.provider=git \
+                              -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                              -Dsonar.sources=src/main/java,src/main/webapp \
+                              -Dsonar.tests=src/test/java \
+                              -Dsonar.java.binaries=target/classes \
+                              -Dsonar.java.test.binaries=target/test-classes \
+                              -Dsonar.junit.reportPaths=target/surefire-reports
+                        """
+                    }
+                }
+            }
+        }
+        stage("Sonar Quality Gate Check") {
+            steps {
+                timeout(time: 1, unit: 'HOURS') {
+                    script {
+                        def qualityGate = waitForQualityGate()
+                        if (qualityGate.status != 'OK') {
+                            error "Pipeline aborted due to quality gate failure: ${qualityGate.status}"
+                        }
+                    }
+                } // End of timeout
+            }
+        }
+        stage('Publish to Nexus') {
+            steps {
+                nexusArtifactUploader(
+                    artifacts: [[
+                        artifactId: 'SimpleWebApplication',
+                        classifier: '',
+                        file: 'target/SimpleWebApplication.war',
+                        type: 'war'
+                    ]],
+                    credentialsId: 'NexusID',
+                    groupId: 'com.maven',
+                    nexusUrl: '172.31.47.199:8081',
+                    nexusVersion: 'nexus3',
+                    protocol: 'http',
+                    repository: 'maven-snapshots',
+                    version: '1.0.0-SNAPSHOT'
+                )
+            }
+        }
+    }
+}
